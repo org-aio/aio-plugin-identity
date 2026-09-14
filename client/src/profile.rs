@@ -28,13 +28,16 @@ pub(super) fn ProfilePage() -> Element {
         None => return rsx! { PageSurface { RequestState {} } },
     };
     rsx! {
+      div { class: "workbench-settings",
         PageSurface {
             PageHeader { title: "个人资料", detail: value.account.clone(), Button { onclick: move |_| editing.set(true), KeyRound {} "修改密码" } }
             if saved() { StatusMessage { message: "密码已修改，其他会话已退出" } }
             section { class: "admin-section", h2 { "账户信息" }
-                dl { class: "admin-details", dt { "账号" } dd { "{value.account}" } dt { "姓名" } dd { "{value.display_name}" } dt { "当前租户" } dd { "{value.tenant_label}" } dt { "用户 ID" } dd { code { class: "admin-code", "{value.user_id}" } } }
+                dl { class: "admin-details", dt { "账号" } dd { "{value.account}" } dt { "姓名" } dd { "{value.display_name}" } dt { "当前工作区" } dd { "{value.tenant_label}" } }
+                details { class: "workbench-technical", summary { "技术详情" } p { "用户 ID：" code { "{value.user_id}" } } }
             }
         }
+      }
         if editing() { PasswordEditor { on_close: move |_| editing.set(false), on_saved: move |_| { editing.set(false); saved.set(true); } } }
     }
 }

@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 aio-plugin-identity-model = { path = "../model" }
-az-dioxus-admin-shell = { git = "https://github.com/zjarlin/dioxus-admin-workbench.git", rev = "1bb367d499d119f4de88a2ed2e7b3acfcc088e6f" }
-az-ui-components = { git = "https://github.com/zjarlin/dioxus-admin-workbench.git", rev = "1bb367d499d119f4de88a2ed2e7b3acfcc088e6f" }
+az-dioxus-admin-shell = { git = "https://github.com/zjarlin/dioxus-admin-workbench.git", rev = "cc676107118a3fa83ac891dd97e35279ab9bebbd" }
+az-ui-components = { git = "https://github.com/zjarlin/dioxus-admin-workbench.git", rev = "cc676107118a3fa83ac891dd97e35279ab9bebbd" }
 dill = "0.15.0"
 dioxus = { version = "=0.7.9", default-features = false, features = ["macro", "html", "signals"] }
 dioxus-icons = { version = "0.1.0", default-features = false }

@@ -16,8 +16,8 @@ pub fn LoginPage() -> Element {
     let mut registering = use_signal(|| false);
     rsx! {
         main { class: "admin-auth",
-            section { class: "admin-auth-form", h1 { "AIO IDEA" } h2 { "账号登录" }
-                form { class: "admin-form", onsubmit: move |event: FormEvent| {
+            section { class: "admin-auth-form", h1 { "AIO IDEA" } h2 { "登录你的工作台" }
+                form { class: "admin-form", aria_busy: busy(), onsubmit: move |event: FormEvent| {
                     event.prevent_default(); if busy() { return; } busy.set(true); error.set(None);
                     let payload = LoginRequest { account: account(), password: password() };
                     spawn(async move { if let Err(message) = http::login(payload).await { error.set(Some(message)); } busy.set(false); });
