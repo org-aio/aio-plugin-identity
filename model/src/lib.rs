@@ -7,6 +7,13 @@ pub struct LoginRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterRequest {
+    pub account: String,
+    pub password: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PasswordRequest {
     pub current_password: String,
     pub new_password: String,

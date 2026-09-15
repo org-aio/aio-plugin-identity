@@ -8,6 +8,18 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 
 use crate::password;
 
+#[path = "registration/mod.rs"]
+mod registration;
+pub(crate) use registration::RegistrationError;
+
+const TENANT_PERMISSIONS: [&str; 5] = [
+    "plugin:manage",
+    "tenant:manage",
+    "rbac:manage",
+    "dictionary:manage",
+    "file:manage",
+];
+
 const COOKIE_NAME: &str = "aio_session";
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS identity_users (
@@ -85,6 +97,7 @@ pub struct IdentityService {
     pool: PgPool,
     secure_cookie: bool,
     password_min_length: usize,
+    registration_slots: tokio::sync::Semaphore,
 }
 
 impl IdentityService {
@@ -115,6 +128,7 @@ impl IdentityService {
                 .context("创建身份数据库连接池失败")?,
             secure_cookie,
             password_min_length,
+            registration_slots: tokio::sync::Semaphore::new(4),
         })
     }
 
@@ -157,7 +171,7 @@ impl IdentityService {
             .bind(&user_id).execute(&mut *transaction).await?;
         sqlx::query("INSERT INTO tenant_member_roles (tenant_id, user_id, role_id) VALUES ('default', $1, 'platform-admin') ON CONFLICT DO NOTHING")
             .bind(&user_id).execute(&mut *transaction).await?;
-        for permission in ["plugin:manage", "tenant:manage", "rbac:manage"] {
+        for permission in TENANT_PERMISSIONS {
             sqlx::query("INSERT INTO role_permissions (tenant_id, role_id, permission) VALUES ('default', 'platform-admin', $1) ON CONFLICT DO NOTHING")
                 .bind(permission).execute(&mut *transaction).await?;
         }

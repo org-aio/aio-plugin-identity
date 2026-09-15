@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use aio_plugin_identity_model::{
-    IdentityErrorResponse, IdentityResponse, LoginRequest, PasswordRequest, SessionView,
+    IdentityErrorResponse, IdentityResponse, LoginRequest, PasswordRequest, RegisterRequest,
+    SessionView,
 };
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -17,6 +18,10 @@ pub fn router(service: Arc<IdentityService>) -> Router {
     Router::new()
         .route("/api/plugins/identity/health", get(health))
         .route("/api/auth/login", post(login))
+        .route(
+            "/api/auth/register",
+            post(register_account).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route("/api/auth/session", get(session))
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/password", post(change_password))
@@ -25,6 +30,40 @@ pub fn router(service: Arc<IdentityService>) -> Router {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn register_account(
+    State(service): State<Arc<IdentityService>>,
+    Json(request): Json<RegisterRequest>,
+) -> Result<Response, IdentityHttpError> {
+    use crate::service::RegistrationError;
+    let result = service.register_account(&request).await.map_err(|error| {
+        let status = match error.downcast_ref::<RegistrationError>() {
+            Some(RegistrationError::Invalid(_)) => StatusCode::BAD_REQUEST,
+            Some(RegistrationError::AccountTaken) => StatusCode::CONFLICT,
+            Some(RegistrationError::Busy) => StatusCode::SERVICE_UNAVAILABLE,
+            None => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        IdentityHttpError {
+            status,
+            message: if status == StatusCode::INTERNAL_SERVER_ERROR {
+                "注册失败，请稍后重试".into()
+            } else {
+                error.to_string()
+            },
+        }
+    })?;
+    Ok((
+        StatusCode::CREATED,
+        [
+            (header::SET_COOKIE, result.cookie),
+            (header::CACHE_CONTROL, "no-store".into()),
+        ],
+        Json(IdentityResponse {
+            data: result.session.view(),
+        }),
+    )
+        .into_response())
 }
 
 async fn login(
