@@ -148,6 +148,27 @@ pub struct UpdatePaymentChannelRequest {
     pub private_key: Option<String>,
 }
 
+/// 宿主 broker 代表插件进程上报用量；调用方需持有宿主服务票据。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeterRequest {
+    pub tenant_id: String,
+    pub user_id: String,
+    pub source_id: String,
+    pub resource: String,
+    pub quantity: i64,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MeterResultView {
+    pub amount_micros: i64,
+    pub grant_consumed: i64,
+    pub balance_charged_micros: i64,
+    pub balance_after_micros: i64,
+    pub duplicate: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SubscribeRequest {

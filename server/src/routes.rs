@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use aio_plugin_identity_model::{
-    IdentityErrorResponse, IdentityResponse, LedgerPage, LoginRequest, PasswordRequest,
-    PaymentChannelView, RechargeOrderView, RechargeRequest, RegisterRequest, SessionView,
-    SubscribeRequest, UpdatePaymentChannelRequest, WalletView,
+    IdentityErrorResponse, IdentityResponse, LedgerPage, LoginRequest, MeterRequest,
+    MeterResultView, PasswordRequest, PaymentChannelView, RechargeOrderView, RechargeRequest,
+    RegisterRequest, SessionView, SubscribeRequest, UpdatePaymentChannelRequest, WalletView,
 };
 use axum::{
     Json, Router,
@@ -41,6 +41,7 @@ pub fn router(service: Arc<IdentityService>) -> Router {
             put(update_payment_channel),
         )
         .route("/api/billing/alipay/notify", post(alipay_notify))
+        .route("/api/billing/meter", post(meter))
         .with_state(service)
 }
 
@@ -253,6 +254,64 @@ async fn alipay_notify(
         .settle_alipay_notification(&fields)
         .await
         .map_err(map_billing_error)
+}
+
+/// 宿主 broker 的计量入口：只用宿主票据鉴权，不接受浏览器会话。
+async fn meter(
+    State(service): State<Arc<IdentityService>>,
+    headers: HeaderMap,
+    Json(request): Json<MeterRequest>,
+) -> Result<Json<IdentityResponse<MeterResultView>>, IdentityHttpError> {
+    require_service_token(&headers)?;
+    let result = service
+        .meter_resource(
+            &request.tenant_id,
+            &request.user_id,
+            &request.source_id,
+            &request.resource,
+            request.quantity,
+            &request.idempotency_key,
+        )
+        .await
+        .map_err(map_billing_error)?;
+    Ok(Json(IdentityResponse {
+        data: MeterResultView {
+            amount_micros: result.amount_micros,
+            grant_consumed: result.grant_consumed,
+            balance_charged_micros: result.balance_charged_micros,
+            balance_after_micros: result.balance_after_micros,
+            duplicate: result.duplicate,
+        },
+    }))
+}
+
+/// 校验宿主服务票据；未配置票据时直接拒绝，避免匿名计量。
+fn require_service_token(headers: &HeaderMap) -> Result<(), IdentityHttpError> {
+    let expected = std::env::var("AIO_BILLING_SERVICE_TOKEN").ok();
+    let provided = headers
+        .get("x-aio-service-token")
+        .and_then(|value| value.to_str().ok());
+    let matches = match (expected.as_deref(), provided) {
+        (Some(expected), Some(provided)) if expected.len() >= 32 => {
+            constant_time_eq(expected.as_bytes(), provided.as_bytes())
+        }
+        _ => false,
+    };
+    if matches {
+        return Ok(());
+    }
+    Err(IdentityHttpError {
+        status: StatusCode::UNAUTHORIZED,
+        message: "宿主计量票据无效".into(),
+    })
+}
+
+/// 常量时间比较，避免通过响应时间泄露票据。
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0_u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// 解析 `application/x-www-form-urlencoded` 表单，支付宝回调不做百分号解码以外的处理。

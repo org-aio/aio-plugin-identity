@@ -177,7 +177,16 @@ CREATE TABLE IF NOT EXISTS billing_payment_channels (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, provider)
 );
+CREATE TABLE IF NOT EXISTS billing_prices (
+    resource TEXT PRIMARY KEY,
+    unit_price_micros BIGINT NOT NULL CHECK (unit_price_micros >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 "#;
+
+/// 按资源维度的默认单价（微单位 / 单位用量）。
+/// `agent_tokens` 按每 token 1 微单位计价，可由运营直接改表覆盖。
+const DEFAULT_PRICES: [(&str, i64); 1] = [("agent_tokens", 1)];
 
 #[derive(Clone, Debug)]
 pub struct SessionContext {
@@ -255,7 +264,23 @@ impl IdentityService {
             .await
             .context("创建身份插件数据表失败")?;
         self.seed_plans().await?;
+        self.seed_prices().await?;
         self.bootstrap().await
+    }
+
+    /// 内置单价幂等写入，已存在的运营调整不会被覆盖。
+    async fn seed_prices(&self) -> Result<()> {
+        for (resource, unit_price_micros) in DEFAULT_PRICES {
+            sqlx::query(
+                "INSERT INTO billing_prices (resource, unit_price_micros) VALUES ($1, $2) ON CONFLICT (resource) DO NOTHING",
+            )
+            .bind(resource)
+            .bind(unit_price_micros)
+            .execute(&self.pool)
+            .await
+            .context("写入内置单价失败")?;
+        }
+        Ok(())
     }
 
     /// 内置套餐幂等写入，已存在的套餐不覆盖运营调整后的价格与额度。

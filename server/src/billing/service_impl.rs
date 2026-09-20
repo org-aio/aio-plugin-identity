@@ -503,6 +503,41 @@ impl IdentityService {
         Ok("success")
     }
 
+    /// 按资源名上报用量，单价取 `billing_prices`；未配置单价的资源按 0 计费。
+    ///
+    /// 这是宿主 broker 转发给插件进程的稳定入口：插件只报资源和用量，
+    /// 价格与扣费顺序都由平台决定。
+    pub async fn meter_resource(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+        source_id: &str,
+        resource: &str,
+        quantity: i64,
+        idempotency_key: &str,
+    ) -> Result<MeterResult> {
+        if quantity <= 0 {
+            return Err(BillingError::Invalid("用量必须大于 0".into()).into());
+        }
+        let unit_price_micros: i64 =
+            sqlx::query_scalar("SELECT unit_price_micros FROM billing_prices WHERE resource = $1")
+                .bind(resource)
+                .fetch_optional(&self.pool)
+                .await
+                .context("读取计费单价失败")?
+                .unwrap_or(0);
+        self.meter(MeterCommand {
+            tenant_id: tenant_id.to_owned(),
+            user_id: user_id.to_owned(),
+            source_id: source_id.to_owned(),
+            resource: resource.to_owned(),
+            quantity,
+            unit_price_micros,
+            idempotency_key: idempotency_key.to_owned(),
+        })
+        .await
+    }
+
     /// 内部计费用量上报：先扣当前周期套餐额度，再扣钱包余额。
     pub async fn meter(&self, command: MeterCommand) -> Result<MeterResult> {
         if command.quantity <= 0 {
