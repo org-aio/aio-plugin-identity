@@ -286,3 +286,199 @@ fn cookie_header(cookie: &str) -> axum::http::HeaderMap {
     headers.insert(header::COOKIE, cookie.parse().unwrap());
     headers
 }
+
+#[tokio::test]
+#[ignore = "需要 AIO_IDENTITY_TEST_DATABASE_URL 指向本机独立 aio_identity_test 数据库"]
+async fn alipay_channel_config_and_notify_are_verified() -> Result<()> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use rsa::{
+        Pkcs1v15Sign, RsaPrivateKey, RsaPublicKey,
+        pkcs8::{EncodePrivateKey as _, EncodePublicKey as _},
+    };
+    use sha2::{Digest as _, Sha256};
+
+    let url = std::env::var("AIO_IDENTITY_TEST_DATABASE_URL")?;
+    let options = PgConnectOptions::from_str(&url)?;
+    let root = PgPoolOptions::new().connect_with(options.clone()).await?;
+    let schema = format!("alipay_{}", uuid::Uuid::new_v4().simple());
+    sqlx::raw_sql(&format!("CREATE SCHEMA {schema}"))
+        .execute(&root)
+        .await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect_with(options.options([("search_path", schema.as_str())]))
+        .await?;
+    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
+    let service = Arc::new(IdentityService {
+        pool: pool.clone(),
+        secure_cookie: true,
+        password_min_length: 12,
+        registration_slots: tokio::sync::Semaphore::new(4),
+    });
+    service.seed_plans().await?;
+    let router = crate::routes::router(service.clone());
+    let cookie = cookie_value(&register(router.clone(), "alipay_user").await?).to_owned();
+    let session = service
+        .authenticate(&cookie_header(&cookie))
+        .await?
+        .expect("会话有效");
+
+    // 生成一对测试密钥，私钥加密入库，公钥用于验签。
+    let mut rng = rand::thread_rng();
+    let private = RsaPrivateKey::new(&mut rng, 2048)?;
+    let public = RsaPublicKey::from(&private);
+    let private_pem = private
+        .to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)?
+        .to_string();
+    let public_pem = public.to_public_key_pem(rsa::pkcs8::LineEnding::LF)?;
+
+    // 未配置私钥时不能启用。
+    let (status, body) = request(
+        router.clone(),
+        "PUT",
+        "/api/billing/payment-channels/alipay",
+        Some(&cookie),
+        Some(json!({
+            "enabled": true,
+            "app_id": "2021000000000000",
+            "gateway": "",
+            "notify_url": "https://aio.addzero.site/api/billing/alipay/notify",
+            "return_url": "https://aio.addzero.site/",
+            "seller_id": "",
+            "public_key": public_pem,
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("私钥"));
+
+    // 写入完整配置并启用。
+    let (status, body) = request(
+        router.clone(),
+        "PUT",
+        "/api/billing/payment-channels/alipay",
+        Some(&cookie),
+        Some(json!({
+            "enabled": true,
+            "app_id": "2021000000000000",
+            "gateway": "",
+            "notify_url": "https://aio.addzero.site/api/billing/alipay/notify",
+            "return_url": "https://aio.addzero.site/",
+            "seller_id": "",
+            "public_key": public_pem,
+            "private_key": private_pem,
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["enabled"], true);
+    assert_eq!(body["data"]["has_private_key"], true);
+    // 视图不回传私钥明文，且数据库只存密文。
+    assert!(body["data"].get("private_key").is_none());
+    let stored: String = sqlx::query_scalar(
+        "SELECT private_key_ciphertext FROM billing_payment_channels WHERE tenant_id = $1",
+    )
+    .bind(&session.tenant_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_ne!(stored, private_pem);
+    assert!(!stored.contains("BEGIN PRIVATE KEY"));
+
+    // 读取渠道时同样只返回 has_private_key。
+    let (status, body) = request(
+        router.clone(),
+        "GET",
+        "/api/billing/payment-channels",
+        Some(&cookie),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"][0]["has_private_key"], true);
+    assert!(body["data"][0].get("private_key").is_none());
+
+    // 创建支付宝订单会返回带签名的支付地址。
+    let (status, body) = request(
+        router.clone(),
+        "POST",
+        "/api/billing/orders",
+        Some(&cookie),
+        Some(json!({"amount_micros": 60_000_000, "provider": "alipay"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let order_id = body["data"]["id"].as_str().unwrap().to_owned();
+    let pay_url = body["data"]["pay_url"].as_str().unwrap();
+    assert!(pay_url.starts_with("https://openapi.alipay.com/gateway.do?"));
+    assert!(pay_url.contains("sign_type=RSA2"));
+    assert!(pay_url.contains("sign="));
+
+    // 伪造签名必须被拒绝。
+    let forged = vec![
+        ("out_trade_no".to_owned(), order_id.clone()),
+        ("trade_status".to_owned(), "TRADE_SUCCESS".to_owned()),
+        ("app_id".to_owned(), "2021000000000000".to_owned()),
+        ("total_amount".to_owned(), "60.00".to_owned()),
+        ("sign_type".to_owned(), "RSA2".to_owned()),
+        ("sign".to_owned(), STANDARD.encode([0_u8; 256])),
+    ];
+    assert!(service.settle_alipay_notification(&forged).await.is_err());
+
+    // 合法通知入账；金额不匹配必须被拒绝。
+    let mut signed = vec![
+        ("out_trade_no".to_owned(), order_id.clone()),
+        ("trade_status".to_owned(), "TRADE_SUCCESS".to_owned()),
+        ("app_id".to_owned(), "2021000000000000".to_owned()),
+        ("total_amount".to_owned(), "60.00".to_owned()),
+        ("sign_type".to_owned(), "RSA2".to_owned()),
+    ];
+    let content = crate::service::billing::alipay_signing_content_for_test(&signed);
+    let digest = Sha256::digest(content.as_bytes());
+    let signature = private.sign(Pkcs1v15Sign::new::<Sha256>(), &digest)?;
+    signed.push(("sign".to_owned(), STANDARD.encode(signature)));
+    assert_eq!(
+        service.settle_alipay_notification(&signed).await?,
+        "success"
+    );
+    let balance: i64 =
+        sqlx::query_scalar("SELECT balance_micros FROM billing_wallets WHERE tenant_id = $1")
+            .bind(&session.tenant_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(balance, 60_000_000);
+    // 重复通知幂等。
+    assert_eq!(
+        service.settle_alipay_notification(&signed).await?,
+        "success"
+    );
+    let balance: i64 =
+        sqlx::query_scalar("SELECT balance_micros FROM billing_wallets WHERE tenant_id = $1")
+            .bind(&session.tenant_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(balance, 60_000_000);
+
+    let mut wrong_amount = signed
+        .iter()
+        .filter(|(key, _)| key != "sign" && key != "sign_type")
+        .cloned()
+        .collect::<Vec<_>>();
+    wrong_amount
+        .iter_mut()
+        .find(|(key, _)| key == "total_amount")
+        .unwrap()
+        .1 = "1.00".to_owned();
+    let content = crate::service::billing::alipay_signing_content_for_test(&wrong_amount);
+    let digest = Sha256::digest(content.as_bytes());
+    let signature = private.sign(Pkcs1v15Sign::new::<Sha256>(), &digest)?;
+    wrong_amount.push(("sign_type".to_owned(), "RSA2".to_owned()));
+    wrong_amount.push(("sign".to_owned(), STANDARD.encode(signature)));
+    assert!(
+        service
+            .settle_alipay_notification(&wrong_amount)
+            .await
+            .is_err()
+    );
+
+    Ok(())
+}

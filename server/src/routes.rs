@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use aio_plugin_identity_model::{
     IdentityErrorResponse, IdentityResponse, LedgerPage, LoginRequest, PasswordRequest,
-    RechargeOrderView, RechargeRequest, RegisterRequest, SessionView, SubscribeRequest, WalletView,
+    PaymentChannelView, RechargeOrderView, RechargeRequest, RegisterRequest, SessionView,
+    SubscribeRequest, UpdatePaymentChannelRequest, WalletView,
 };
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::Deserialize;
 
@@ -34,6 +35,12 @@ pub fn router(service: Arc<IdentityService>) -> Router {
             post(confirm_recharge_order),
         )
         .route("/api/billing/subscription", post(subscribe))
+        .route("/api/billing/payment-channels", get(payment_channels))
+        .route(
+            "/api/billing/payment-channels/{provider}",
+            put(update_payment_channel),
+        )
+        .route("/api/billing/alipay/notify", post(alipay_notify))
         .with_state(service)
 }
 
@@ -206,6 +213,90 @@ async fn authenticate(
         .authenticate(headers)
         .await?
         .ok_or_else(|| IdentityHttpError::unauthorized("会话无效或已过期"))
+}
+
+async fn payment_channels(
+    State(service): State<Arc<IdentityService>>,
+    headers: HeaderMap,
+) -> Result<Json<IdentityResponse<Vec<PaymentChannelView>>>, IdentityHttpError> {
+    let session = authenticate(&service, &headers).await?;
+    require_billing_manage(&session)?;
+    let channels = service
+        .payment_channels(&session)
+        .await
+        .map_err(map_billing_error)?;
+    Ok(Json(IdentityResponse { data: channels }))
+}
+
+async fn update_payment_channel(
+    State(service): State<Arc<IdentityService>>,
+    headers: HeaderMap,
+    Path(provider): Path<String>,
+    Json(request): Json<UpdatePaymentChannelRequest>,
+) -> Result<Json<IdentityResponse<PaymentChannelView>>, IdentityHttpError> {
+    let session = authenticate(&service, &headers).await?;
+    require_billing_manage(&session)?;
+    let channel = service
+        .update_payment_channel(&session, &provider, &request)
+        .await
+        .map_err(map_billing_error)?;
+    Ok(Json(IdentityResponse { data: channel }))
+}
+
+/// 支付宝异步通知：表单编码、无会话，只按验签和订单金额入账。
+async fn alipay_notify(
+    State(service): State<Arc<IdentityService>>,
+    body: String,
+) -> Result<&'static str, IdentityHttpError> {
+    let fields = parse_form(&body);
+    service
+        .settle_alipay_notification(&fields)
+        .await
+        .map_err(map_billing_error)
+}
+
+/// 解析 `application/x-www-form-urlencoded` 表单，支付宝回调不做百分号解码以外的处理。
+fn parse_form(body: &str) -> Vec<(String, String)> {
+    body.split('&')
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            Some((decode_component(key), decode_component(value)))
+        })
+        .collect()
+}
+
+/// 百分号解码，并把 `+` 还原为空格。
+fn decode_component(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                output.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let hex = &value[index + 1..index + 3];
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        output.push(byte);
+                        index += 3;
+                    }
+                    Err(_) => {
+                        output.push(bytes[index]);
+                        index += 1;
+                    }
+                }
+            }
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 fn require_billing_manage(session: &SessionContext) -> Result<(), IdentityHttpError> {

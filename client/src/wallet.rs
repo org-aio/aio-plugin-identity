@@ -5,6 +5,7 @@ use az_ui_components::{
     button::{Button, ButtonSize, ButtonVariant},
     dialog::{Dialog, DialogDescription, DialogTitle},
     input::Input,
+    select::{Select, SelectItem},
 };
 use dioxus::prelude::*;
 use dioxus_icons::lucide::{CreditCard, RefreshCw, Sparkles, Wallet};
@@ -165,21 +166,38 @@ fn LedgerList(entries: Vec<LedgerEntry>, on_confirm: Callback<String>) -> Elemen
 #[component]
 fn RechargeDialog(on_close: Callback<()>, on_created: Callback<String>) -> Element {
     let mut amount = use_signal(|| "60".to_owned());
-    rsx! { EditorDialog { title: "充值", description: "创建充值订单，确认到账后计入余额。", on_close, submit_label: "创建订单",
+    let mut provider = use_signal(|| "alipay".to_owned());
+    rsx! { EditorDialog { title: "充值", description: "选择支付渠道；支付宝会跳转到收银台，人工渠道创建后由管理员确认到账。", on_close, submit_label: "创建订单",
         on_saved: move |_| {},
         save: move |_| -> AsyncResult<()> {
             let parsed = parse_amount(amount());
+            let provider = provider();
             Box::pin(async move {
                 let amount_micros = parsed?;
                 let order = http::create_recharge_order(RechargeRequest {
                     amount_micros,
-                    provider: "manual".to_owned(),
+                    provider: provider.clone(),
                 })
                 .await?;
+                if let Some(url) = order.pay_url.clone() {
+                    // 支付宝收银台在新标签页打开，避免离开个人资料页。
+                    let _ = dioxus::document::eval(&format!(
+                        "window.open({}, '_blank', 'noopener'); return true;",
+                        serde_json::to_string(&url).unwrap_or_else(|_| "\"\"".into())
+                    ))
+                    .await;
+                }
                 on_created.call(order.id);
                 Ok(())
             })
         },
+        label { class: "admin-field", span { "支付渠道" }
+            Select { aria_label: "支付渠道", value: provider(),
+                options: [("alipay", "支付宝"), ("manual", "人工确认")].into_iter()
+                    .map(|(id, label)| SelectItem::new(id, label)).collect(),
+                on_value_change: move |value| provider.set(value),
+            }
+        }
         label { class: "admin-field", span { "金额（USD）" }
             Input { aria_label: "充值金额", r#type: "number", min: "1", step: "1", required: true,
                 value: amount(), oninput: move |event: FormEvent| amount.set(event.value()) }

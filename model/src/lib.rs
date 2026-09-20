@@ -114,6 +114,38 @@ pub struct RechargeOrderView {
     pub provider: String,
     pub status: String,
     pub created_at: String,
+    /// 渠道支付地址；人工渠道为 `None`。
+    pub pay_url: Option<String>,
+}
+
+/// 支付渠道配置视图；私钥只返回是否已保存，不回传明文。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PaymentChannelView {
+    pub provider: String,
+    pub enabled: bool,
+    pub app_id: String,
+    pub gateway: String,
+    pub notify_url: String,
+    pub return_url: String,
+    pub seller_id: String,
+    pub public_key: String,
+    pub has_private_key: bool,
+}
+
+/// 更新支付渠道配置。`private_key` 为 `None` 表示保留已保存私钥，
+/// `Some("")` 表示清除，`Some(value)` 表示覆盖。
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdatePaymentChannelRequest {
+    pub enabled: bool,
+    pub app_id: String,
+    pub gateway: String,
+    pub notify_url: String,
+    pub return_url: String,
+    pub seller_id: String,
+    pub public_key: String,
+    #[serde(default)]
+    pub private_key: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

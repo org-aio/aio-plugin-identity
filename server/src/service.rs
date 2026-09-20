@@ -162,6 +162,21 @@ CREATE TABLE IF NOT EXISTS billing_usage_events (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS billing_usage_events_idempotency_idx
     ON billing_usage_events (tenant_id, source_id, idempotency_key);
+CREATE TABLE IF NOT EXISTS billing_payment_channels (
+    tenant_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    enabled BOOLEAN NOT NULL DEFAULT false,
+    app_id TEXT NOT NULL DEFAULT '',
+    gateway TEXT NOT NULL DEFAULT '',
+    notify_url TEXT NOT NULL DEFAULT '',
+    return_url TEXT NOT NULL DEFAULT '',
+    seller_id TEXT NOT NULL DEFAULT '',
+    public_key TEXT NOT NULL DEFAULT '',
+    private_key_ciphertext TEXT,
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, provider)
+);
 "#;
 
 #[derive(Clone, Debug)]
