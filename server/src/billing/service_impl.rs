@@ -479,7 +479,8 @@ impl IdentityService {
         if channel.public_key.is_empty() {
             return Err(BillingError::Invalid("支付宝公钥未配置".into()).into());
         }
-        alipay::verify_notification(fields, &channel.public_key)?;
+        alipay::verify_notification(fields, &channel.public_key)
+            .map_err(|error| BillingError::Invalid(format!("支付宝回调验签失败：{error}")))?;
         let status = value("trade_status").unwrap_or_default();
         if !matches!(status.as_str(), "TRADE_SUCCESS" | "TRADE_FINISHED") {
             return Ok("success");
