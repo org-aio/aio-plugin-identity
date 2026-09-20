@@ -65,6 +65,8 @@ impl IdentityService {
             .bind(&tenant_id).bind(TENANT_PERMISSIONS.as_slice()).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO role_permissions (tenant_id, role_id, permission) VALUES ($1, 'member', 'workspace:view')")
             .bind(&tenant_id).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO billing_wallets (tenant_id, currency) VALUES ($1, 'USD') ON CONFLICT DO NOTHING")
+            .bind(&tenant_id).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO auth_sessions (id, user_id, tenant_id, expires_at) VALUES ($1, $2, $3, now() + interval '7 days')")
             .bind(&session_id).bind(&user_id).bind(&tenant_id).execute(&mut *tx).await?;
         tx.commit().await?;

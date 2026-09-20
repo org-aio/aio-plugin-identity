@@ -2,6 +2,7 @@ mod http;
 mod login;
 mod profile;
 mod registration;
+mod wallet;
 
 pub use aio_plugin_identity_model::SessionView;
 use az_dioxus_admin_shell::{ApplicationPage, ApplicationPlugin, ApplicationScene};

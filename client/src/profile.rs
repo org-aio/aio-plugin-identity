@@ -1,4 +1,4 @@
-use super::http;
+use super::{http, wallet::WalletSection};
 use aio_plugin_identity_model::PasswordRequest;
 use az_ui_components::{
     admin::{AsyncResult, EditorDialog, PageHeader, PageSurface, RequestState, StatusMessage},
@@ -36,6 +36,7 @@ pub(super) fn ProfilePage() -> Element {
                 dl { class: "admin-details", dt { "账号" } dd { "{value.account}" } dt { "姓名" } dd { "{value.display_name}" } dt { "当前工作区" } dd { "{value.tenant_label}" } }
                 details { class: "workbench-technical", summary { "技术详情" } p { "用户 ID：" code { "{value.user_id}" } } }
             }
+            WalletSection {}
         }
       }
         if editing() { PasswordEditor { on_close: move |_| editing.set(false), on_saved: move |_| { editing.set(false); saved.set(true); } } }

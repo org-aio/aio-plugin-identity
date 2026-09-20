@@ -12,6 +12,7 @@ dill = "0.15.0"
 dioxus = { version = "=0.7.9", default-features = false, features = ["macro", "html", "signals"] }
 dioxus-icons = { version = "0.1.0", default-features = false }
 gloo-net = { version = "0.6.0", features = ["http", "json"] }
+serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 
 [lints]

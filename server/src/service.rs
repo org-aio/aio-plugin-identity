@@ -8,17 +8,31 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 
 use crate::password;
 
+#[path = "billing/mod.rs"]
+mod billing;
+pub use billing::{BillingError, MeterCommand, MeterResult};
+
 #[path = "registration/mod.rs"]
 mod registration;
 pub(crate) use registration::RegistrationError;
 
-const TENANT_PERMISSIONS: [&str; 5] = [
+const TENANT_PERMISSIONS: [&str; 6] = [
     "plugin:manage",
     "tenant:manage",
     "rbac:manage",
     "dictionary:manage",
     "file:manage",
+    "billing:manage",
 ];
+
+/// 内置套餐在首次初始化时写入；价格和额度属于可运营数据，后续可改表。
+const DEFAULT_PLANS: [(&str, &str, i64, &str, &str); 1] = [(
+    "agent_pro_60",
+    "智能体专业版",
+    60_000_000,
+    r#"{"agent_tokens": 20000000}"#,
+    r#"["agent","memory","skills"]"#,
+)];
 
 const COOKIE_NAME: &str = "aio_session";
 const SCHEMA: &str = r#"
@@ -60,6 +74,94 @@ CREATE TABLE IF NOT EXISTS role_permissions (
     PRIMARY KEY(tenant_id, role_id, permission)
 );
 CREATE INDEX IF NOT EXISTS auth_sessions_expires_at_idx ON auth_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS billing_wallets (
+    tenant_id TEXT PRIMARY KEY,
+    currency TEXT NOT NULL DEFAULT 'USD',
+    balance_micros BIGINT NOT NULL DEFAULT 0 CHECK (balance_micros >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS billing_ledger (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    amount_micros BIGINT NOT NULL,
+    balance_after_micros BIGINT NOT NULL,
+    reference TEXT,
+    description TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS billing_ledger_reference_idx
+    ON billing_ledger (tenant_id, kind, reference) WHERE reference IS NOT NULL;
+CREATE INDEX IF NOT EXISTS billing_ledger_tenant_created_idx
+    ON billing_ledger (tenant_id, created_at DESC, id);
+CREATE TABLE IF NOT EXISTS billing_orders (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    amount_micros BIGINT NOT NULL CHECK (amount_micros > 0),
+    currency TEXT NOT NULL DEFAULT 'USD',
+    provider TEXT NOT NULL,
+    provider_order_id TEXT,
+    status TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    paid_at TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS billing_orders_provider_idx
+    ON billing_orders (provider, provider_order_id) WHERE provider_order_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS billing_orders_tenant_created_idx
+    ON billing_orders (tenant_id, created_at DESC, id);
+CREATE TABLE IF NOT EXISTS billing_plans (
+    id TEXT PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    price_micros BIGINT NOT NULL CHECK (price_micros >= 0),
+    currency TEXT NOT NULL DEFAULT 'USD',
+    interval TEXT NOT NULL,
+    included_usage JSONB NOT NULL DEFAULT '{}'::jsonb,
+    features JSONB NOT NULL DEFAULT '[]'::jsonb,
+    active BOOLEAN NOT NULL DEFAULT true
+);
+CREATE TABLE IF NOT EXISTS billing_subscriptions (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    period_start TIMESTAMPTZ NOT NULL,
+    period_end TIMESTAMPTZ NOT NULL,
+    auto_renew BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS billing_subscriptions_tenant_idx
+    ON billing_subscriptions (tenant_id, status, period_end DESC);
+CREATE TABLE IF NOT EXISTS billing_usage_grants (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    subscription_id TEXT,
+    resource TEXT NOT NULL,
+    quantity BIGINT NOT NULL CHECK (quantity >= 0),
+    consumed BIGINT NOT NULL DEFAULT 0 CHECK (consumed >= 0),
+    period_start TIMESTAMPTZ NOT NULL,
+    period_end TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS billing_usage_grants_tenant_idx
+    ON billing_usage_grants (tenant_id, resource, period_end DESC);
+CREATE TABLE IF NOT EXISTS billing_usage_events (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    quantity BIGINT NOT NULL CHECK (quantity > 0),
+    unit_price_micros BIGINT NOT NULL CHECK (unit_price_micros >= 0),
+    amount_micros BIGINT NOT NULL CHECK (amount_micros >= 0),
+    idempotency_key TEXT NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS billing_usage_events_idempotency_idx
+    ON billing_usage_events (tenant_id, source_id, idempotency_key);
 "#;
 
 #[derive(Clone, Debug)]
@@ -137,7 +239,30 @@ impl IdentityService {
             .execute(&self.pool)
             .await
             .context("创建身份插件数据表失败")?;
+        self.seed_plans().await?;
         self.bootstrap().await
+    }
+
+    /// 内置套餐幂等写入，已存在的套餐不覆盖运营调整后的价格与额度。
+    async fn seed_plans(&self) -> Result<()> {
+        for (code, title, price_micros, included_usage, features) in DEFAULT_PLANS {
+            sqlx::query(
+                r#"INSERT INTO billing_plans
+                       (id, code, title, price_micros, currency, interval, included_usage, features)
+                   VALUES ($1, $2, $3, $4, 'USD', 'month', $5::jsonb, $6::jsonb)
+                   ON CONFLICT (code) DO NOTHING"#,
+            )
+            .bind(uuid::Uuid::new_v4().to_string())
+            .bind(code)
+            .bind(title)
+            .bind(price_micros)
+            .bind(included_usage)
+            .bind(features)
+            .execute(&self.pool)
+            .await
+            .context("写入内置套餐失败")?;
+        }
+        Ok(())
     }
 
     async fn bootstrap(&self) -> Result<()> {

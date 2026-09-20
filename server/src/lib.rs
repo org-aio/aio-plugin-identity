@@ -2,6 +2,7 @@ mod password;
 mod routes;
 mod service;
 
+pub use service::{BillingError, MeterCommand, MeterResult};
 pub use service::{IdentityService, SessionContext};
 
 use anyhow::{Context as _, Result};
