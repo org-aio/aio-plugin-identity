@@ -529,6 +529,27 @@ impl IdentityService {
         Ok(true)
     }
 
+    /// 管理员重置指定账号的密码；不校验旧密码，但会结束该账号的所有会话。
+    pub async fn reset_password(&self, user_id: &str, new_password: &str) -> Result<()> {
+        self.validate_password(new_password, "新密码")?;
+        let password = new_password.to_owned();
+        let encoded = tokio::task::spawn_blocking(move || password::hash(&password))
+            .await
+            .context("密码摘要任务失败")??;
+        let updated = sqlx::query("UPDATE identity_users SET password_hash = $2 WHERE id = $1")
+            .bind(user_id)
+            .bind(encoded)
+            .execute(&self.pool)
+            .await?
+            .rows_affected();
+        ensure!(updated == 1, "账号不存在");
+        sqlx::query("DELETE FROM auth_sessions WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn permissions(&self, tenant_id: &str, user_id: &str) -> Result<Vec<String>> {
         sqlx::query_scalar(
             "SELECT DISTINCT permissions.permission FROM tenant_member_roles roles JOIN role_permissions permissions ON permissions.tenant_id = roles.tenant_id AND permissions.role_id = roles.role_id WHERE roles.tenant_id = $1 AND roles.user_id = $2 ORDER BY permissions.permission",
