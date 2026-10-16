@@ -268,6 +268,11 @@ impl IdentityService {
         self.bootstrap().await
     }
 
+    /// 停止本代身份服务的数据库连接；会话和业务数据保留，重启必须创建新实例。
+    pub async fn shutdown(&self) {
+        self.pool.close().await;
+    }
+
     /// 内置单价幂等写入，已存在的运营调整不会被覆盖。
     async fn seed_prices(&self) -> Result<()> {
         for (resource, unit_price_micros) in DEFAULT_PRICES {
